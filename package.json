@@ -1,0 +1,22 @@
+{
+  "name": "world-simulator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WORLD SIMULATOR - a 2D civilization and world simulation sandbox (Phase 1: project foundation).",
+  "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "vite": "^7.3.8"
+  }
+}
