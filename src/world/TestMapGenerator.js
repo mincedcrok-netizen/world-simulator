@@ -1,4 +1,8 @@
 /**
+ * LEGACY Phase 1 map generator. NOT used by the game since Phase 2; it is kept
+ * (with its tests) as a small, dependency-free reference. The game generates
+ * worlds with world/generation/WorldGenerator.js.
+ *
  * TEMPORARY Phase 1 map generator.
  *
  * Its only job is to give the renderer and camera something realistic-looking
@@ -108,7 +112,7 @@ export function generateTestMap(config) {
         const inland = best - seaLevel;
         if (inland < 0.03) terrain = TERRAIN.SAND;
         else if (inland < 0.3) terrain = TERRAIN.GRASS;
-        else if (inland < 0.46) terrain = TERRAIN.HIGHLAND;
+        else if (inland < 0.46) terrain = TERRAIN.HILLS;
         else terrain = TERRAIN.MOUNTAIN;
       }
       tiles[index] = terrain;

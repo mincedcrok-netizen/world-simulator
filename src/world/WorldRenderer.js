@@ -1,20 +1,27 @@
 import Phaser from 'phaser';
-import { hash2D } from '../utils/Noise.js';
-import { TERRAIN_INFO } from './terrain.js';
+import { paintWorld } from './TerrainPainter.js';
 
-const TEXTURE_KEY = 'world-map';
+const DETAIL_KEY = 'world-detail';
+const OVERVIEW_KEY = 'world-overview';
 const BORDER_COLOR = 0xc2a265;
-const SHADE_SEED = 0x51ed27;
+
+/** Texels per tile of the detailed texture: keeps its side at roughly 770-1540 px. */
+function detailScaleFor(tiles) {
+  if (tiles <= 128) return 6;
+  if (tiles <= 256) return 4;
+  return 3;
+}
 
 /**
- * Draws a World with Phaser.
+ * Draws a generated World with Phaser.
  *
- * Performance approach: the whole map is baked ONCE into a single canvas
- * texture (one pixel per tile) and shown as one image scaled up with nearest
- * neighbour filtering. That is one draw call and a few hundred KB of GPU
- * memory even for the Large map, and Phaser culls whatever the camera cannot
- * see. Later phases can swap this for chunked rendering without touching the
- * simulation.
+ * Performance approach: the terrain is painted ONCE (TerrainPainter) into two
+ * canvas textures and shown as just two images - never one object per tile.
+ *  - detail   : several texels per tile, used when zoomed in
+ *  - overview : one texel per tile, used when zoomed far out, so thin rivers
+ *               and coastlines do not shimmer from heavy minification
+ * Only one is visible at a time (with hysteresis), so the GPU draws a single
+ * quad per frame, and Phaser culls whatever the camera cannot see.
  */
 export class WorldRenderer {
   /**
@@ -24,50 +31,57 @@ export class WorldRenderer {
   constructor(scene, world) {
     this._scene = scene;
     this._world = world;
-    this._image = null;
+    this._detail = null;
+    this._overview = null;
     this._border = null;
+    this._detailScale = detailScaleFor(world.width);
     this._borderZoom = -1;
+    this._showingDetail = true;
   }
 
   build() {
-    const scene = this._scene;
-    const { width, height, tiles, tileSize } = this._world;
+    const { tileSize } = this._world;
+    const detailPaint = paintWorld(this._world, { scale: this._detailScale });
+    const overviewPaint = paintWorld(this._world, { scale: 1 });
 
-    if (scene.textures.exists(TEXTURE_KEY)) scene.textures.remove(TEXTURE_KEY);
-    const texture = scene.textures.createCanvas(TEXTURE_KEY, width, height);
-    if (!texture) throw new Error('Could not allocate the world texture.');
-
-    const context = texture.getContext();
-    const image = context.createImageData(width, height);
-    const pixels = image.data;
-    const palette = TERRAIN_INFO.map((t) => t.color);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const index = y * width + x;
-        const color = palette[tiles[index]];
-        // Tiny per-tile brightness variation so individual tiles are visible when zoomed in.
-        const shade = 1 + (hash2D(SHADE_SEED, x, y) - 0.5) * 0.1;
-        const o = index * 4;
-        pixels[o] = color[0] * shade;
-        pixels[o + 1] = color[1] * shade;
-        pixels[o + 2] = color[2] * shade;
-        pixels[o + 3] = 255;
-      }
-    }
-    context.putImageData(image, 0, 0);
-    texture.refresh();
-    texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-
-    this._image = scene.add.image(0, 0, TEXTURE_KEY).setOrigin(0, 0).setScale(tileSize);
-    this._border = scene.add.graphics().setDepth(10);
-    this.updateBorder(1);
+    this._detail = this._createImage(DETAIL_KEY, detailPaint, tileSize / this._detailScale);
+    this._overview = this._createImage(OVERVIEW_KEY, overviewPaint, tileSize);
+    this._overview.setVisible(false);
+    this._border = this._scene.add.graphics().setDepth(10);
+    this.updateZoom(1);
   }
 
   /**
-   * Redraw the boundary frame so it keeps a readable on-screen thickness at
-   * any zoom. Skipped unless the zoom changed by more than 2 percent.
+   * Refresh zoom-dependent drawing: which texture is shown, and the boundary
+   * frame thickness. Cheap; call it only on frames where the zoom changed.
    */
-  updateBorder(zoom) {
+  updateZoom(zoom) {
+    if (!this._detail) return;
+
+    // Screen pixels per detail texel decides the level of detail.
+    const texelPixels = (this._world.tileSize * zoom) / this._detailScale;
+    const useDetail = this._showingDetail ? texelPixels > 0.8 : texelPixels > 1.05;
+    if (useDetail !== this._showingDetail) {
+      this._showingDetail = useDetail;
+      this._detail.setVisible(useDetail);
+      this._overview.setVisible(!useDetail);
+    }
+    this._updateBorder(zoom);
+  }
+
+  _createImage(key, paint, scale) {
+    const scene = this._scene;
+    if (scene.textures.exists(key)) scene.textures.remove(key);
+    const texture = scene.textures.createCanvas(key, paint.width, paint.height);
+    if (!texture) throw new Error('Could not allocate the world texture.');
+    texture.getContext().putImageData(new ImageData(paint.pixels, paint.width, paint.height), 0, 0);
+    texture.refresh();
+    texture.setFilter(Phaser.Textures.FilterMode.LINEAR);
+    return scene.add.image(0, 0, key).setOrigin(0, 0).setScale(scale);
+  }
+
+  /** Boundary frame with a roughly constant on-screen thickness; redrawn only when zoom changes >2%. */
+  _updateBorder(zoom) {
     if (!this._border) return;
     if (this._borderZoom > 0 && Math.abs(zoom - this._borderZoom) / this._borderZoom < 0.02) return;
     this._borderZoom = zoom;
@@ -79,10 +93,12 @@ export class WorldRenderer {
   }
 
   destroy() {
-    this._image?.destroy();
+    this._detail?.destroy();
+    this._overview?.destroy();
     this._border?.destroy();
-    this._image = null;
-    this._border = null;
-    if (this._scene.textures?.exists(TEXTURE_KEY)) this._scene.textures.remove(TEXTURE_KEY);
+    this._detail = this._overview = this._border = null;
+    for (const key of [DETAIL_KEY, OVERVIEW_KEY]) {
+      if (this._scene.textures?.exists(key)) this._scene.textures.remove(key);
+    }
   }
 }

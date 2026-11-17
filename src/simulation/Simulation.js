@@ -12,7 +12,7 @@ import { SIMULATION } from '../config/settings.js';
 import { validateWorldConfig } from '../config/worldOptions.js';
 import { EventBus } from '../systems/EventBus.js';
 import { EVENTS } from '../systems/Events.js';
-import { World } from '../world/World.js';
+import { generateWorld } from '../world/generation/WorldGenerator.js';
 import { SimulationClock } from './SimulationClock.js';
 import { WorldState } from './WorldState.js';
 
@@ -44,7 +44,7 @@ export class Simulation {
     this.clock = new SimulationClock({ secondsPerYear });
     /** @type {WorldState|null} */
     this.worldState = null;
-    /** @type {World|null} */
+    /** @type {import('../world/World.js').World|null} */
     this.world = null;
 
     this._time = timeSource;
@@ -71,11 +71,11 @@ export class Simulation {
     }
     const config = validation.value;
     this.worldState = new WorldState(config);
-    this.world = World.fromConfig(config); // temporary Phase 1 test map
+    this.world = generateWorld(config); // procedural generation (Phase 2)
     this.clock = new SimulationClock({ secondsPerYear: this.clock.secondsPerYear });
     this.worldState.year = this.clock.year;
     console.info(
-      `[Simulation] Initialized "${config.name}" (seed ${config.seed}, ${config.tiles}x${config.tiles} tiles).`,
+      `[Simulation] Initialized "${config.name}" (seed ${config.seed}, ${config.tiles}x${config.tiles} tiles, generated in ${this.world.generationMs} ms).`,
     );
     this.bus.emit(EVENTS.SIM_INITIALIZED, { worldState: this.worldState, snapshot: this.snapshot() });
   }

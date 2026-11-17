@@ -41,7 +41,7 @@ export class WorldScene extends Phaser.Scene {
     const controller = this._cameraController;
     if (!controller) return;
     controller.update(delta);
-    if (controller.zoomChanged) this._renderer.updateBorder(controller.zoom);
+    if (controller.zoomChanged) this._renderer.updateZoom(controller.zoom);
   }
 
   _setup({ bus, settings, hud, debug, loading }) {
@@ -71,7 +71,7 @@ export class WorldScene extends Phaser.Scene {
       smoothing: settings.get('cameraSmoothing'),
     });
     this._cameraController.attach();
-    this._renderer.updateBorder(this._cameraController.zoom);
+    this._renderer.updateZoom(this._cameraController.zoom);
 
     // 4. Reactions to settings changes and to leaving the world
     this._cleanups.push(
@@ -99,7 +99,29 @@ export class WorldScene extends Phaser.Scene {
     debug.addSection('world', 'World', () => ({
       Map: `${simulation.world.width} x ${simulation.world.height} tiles`,
       Land: `${landPercent}%`,
+      Generated: `${simulation.world.generationMs} ms`,
+      Lakes: simulation.world.lakes.length,
     }));
+    // Tile under the mouse pointer: handy for checking the generated data.
+    debug.addSection('tile', 'Tile under cursor', () => {
+      const pointer = this.input.activePointer;
+      const spot = this._cameraController.screenToWorld(pointer.x, pointer.y);
+      const world = simulation.world;
+      const info = world.describeTile(Math.floor(spot.x / world.tileSize), Math.floor(spot.y / world.tileSize));
+      if (!info) return { Position: 'outside map' };
+      const rows = {
+        Position: `${info.x}, ${info.y}`,
+        Terrain: info.terrain,
+        Biome: info.biome,
+        Elevation: info.elevation.toFixed(3),
+        Temperature: `${info.temperature} C`,
+        Rainfall: info.rainfall,
+        Moisture: info.moisture,
+        River: info.river > 0 ? `size ${info.river}` : 'no',
+        Resources: info.resources.length > 0 ? info.resources.slice(0, 3).map((r) => r.name).join(', ') : 'none',
+      };
+      return rows;
+    });
 
     // 6. Go
     simulation.start();
@@ -132,6 +154,7 @@ export class WorldScene extends Phaser.Scene {
     debug.removeSection('simulation');
     debug.removeSection('camera');
     debug.removeSection('world');
+    debug.removeSection('tile');
     hud.hide();
   }
 }

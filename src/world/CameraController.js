@@ -59,6 +59,7 @@ export class CameraController {
     /** True during frames in which the zoom changed (the renderer uses it to refresh the border). */
     this.zoomChanged = false;
     this._state = { x: 0, y: 0, zoom: 1 }; // reused for getState()
+    this._point = { x: 0, y: 0 }; // reused for screenToWorld()
     this._attached = false;
 
     this._onKeyDown = this._onKeyDown.bind(this);
@@ -116,6 +117,16 @@ export class CameraController {
     this._state.y = this._cy;
     this._state.zoom = this._zoom;
     return this._state;
+  }
+
+  /**
+   * Convert a position on the canvas (pixels) to world pixels. The returned
+   * object is reused between calls.
+   */
+  screenToWorld(screenX, screenY) {
+    this._point.x = this._cx + (screenX - this._viewW / 2) / this._zoom;
+    this._point.y = this._cy + (screenY - this._viewH / 2) / this._zoom;
+    return this._point;
   }
 
   /**
