@@ -12,6 +12,7 @@ import { ErrorOverlay } from './ui/ErrorOverlay.js';
 import { LoadingOverlay } from './ui/LoadingOverlay.js';
 import { MainMenu } from './ui/MainMenu.js';
 import { SettingsDialog } from './ui/SettingsDialog.js';
+import { SettlementPanel } from './ui/SettlementPanel.js';
 import { WorldHUD } from './ui/WorldHUD.js';
 
 /** Errors browsers raise for harmless layout reasons; not worth interrupting the player. */
@@ -53,9 +54,12 @@ function bootstrap() {
     const loading = new LoadingOverlay(root);
     const menu = new MainMenu({ root, bus, settingsDialog });
     const hud = new WorldHUD({ root, bus, settingsDialog });
+    const settlementPanel = new SettlementPanel({ root, bus });
 
-    const services = { bus, settings, debug, loading, menu, hud, errorOverlay };
-    createGame({ parent: 'game-container', services });
+    const services = { bus, settings, debug, loading, menu, hud, settlementPanel, errorOverlay };
+    const game = createGame({ parent: 'game-container', services });
+    // Development only: lets browser tests and the console inspect the running game.
+    if (import.meta.env.DEV) window.__worldSimulator = { game, services };
   } catch (error) {
     console.error('[Main] Initialization failed:', error);
     document.getElementById('boot-splash')?.remove();

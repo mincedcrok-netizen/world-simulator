@@ -62,3 +62,35 @@ export function componentSizes(width, height, predicate) {
 }
 
 export const mean = (values) => values.reduce((a, b) => a + b, 0) / Math.max(1, values.length);
+
+import { World } from '../src/world/World.js';
+import { TERRAIN } from '../src/world/terrain.js';
+import { RESOURCE_KEYS } from '../src/world/resources.js';
+
+/**
+ * A tiny hand-built world for exact, controlled tests: open plains with an
+ * ocean border and optional river columns. Only the layers settlements read
+ * (terrain and resources) are filled in.
+ *
+ * @param {{ size?: number, fertile?: number, wood?: number, stone?: number, riverColumns?: number[], terrain?: number }} [options]
+ */
+export function createSyntheticWorld({ size = 40, fertile = 220, wood = 90, stone = 90, riverColumns = [10, 29], terrain = TERRAIN.PLAINS } = {}) {
+  const tiles = new Uint8Array(size * size);
+  const resources = {};
+  for (const key of RESOURCE_KEYS) resources[key] = new Uint8Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = y * size + x;
+      const border = x < 2 || y < 2 || x >= size - 2 || y >= size - 2;
+      tiles[i] = border ? TERRAIN.DEEP_WATER : terrain;
+      if (border) continue;
+      resources.fertileSoil[i] = fertile;
+      resources.wood[i] = wood;
+      resources.stone[i] = stone;
+      let nearest = 99;
+      for (const c of riverColumns) nearest = Math.min(nearest, Math.abs(x - c));
+      resources.freshwater[i] = nearest === 0 ? 255 : nearest <= 2 ? [0, 210, 150][nearest] : 0;
+    }
+  }
+  return new World({ width: size, height: size, tiles, resources, seedValue: 7 });
+}

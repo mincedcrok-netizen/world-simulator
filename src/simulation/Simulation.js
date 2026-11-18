@@ -8,11 +8,13 @@
  *
  * Events emitted: see EVENTS.SIM_*. Commands accepted: see EVENTS.CMD_SIM_*.
  */
+import { createSettlementConfig } from '../config/settlementConfig.js';
 import { SIMULATION } from '../config/settings.js';
 import { validateWorldConfig } from '../config/worldOptions.js';
 import { EventBus } from '../systems/EventBus.js';
 import { EVENTS } from '../systems/Events.js';
 import { generateWorld } from '../world/generation/WorldGenerator.js';
+import { SettlementSystem } from './settlements/SettlementSystem.js';
 import { SimulationClock } from './SimulationClock.js';
 import { WorldState } from './WorldState.js';
 
@@ -31,6 +33,7 @@ export class Simulation {
    * @param {{setInterval: Function, clearInterval: Function}} [options.scheduler]
    * @param {number} [options.tickIntervalMs]
    * @param {number} [options.maxStepMs]
+   * @param {object} [options.settlementConfig] Partial settlement tuning (validated; see config/settlementConfig.js).
    */
   constructor({
     bus = null,
@@ -39,9 +42,14 @@ export class Simulation {
     scheduler = defaultScheduler,
     tickIntervalMs = SIMULATION.TICK_INTERVAL_MS,
     maxStepMs = SIMULATION.MAX_STEP_MS,
+    settlementConfig = {},
   } = {}) {
     this.bus = bus ?? new EventBus();
     this.clock = new SimulationClock({ secondsPerYear });
+    /** Validated eagerly so a bad config fails at construction, not mid-game (throws SettlementConfigError). */
+    this._settlementConfig = createSettlementConfig(settlementConfig);
+    /** @type {SettlementSystem|null} */
+    this.settlements = null;
     /** @type {WorldState|null} */
     this.worldState = null;
     /** @type {import('../world/World.js').World|null} */
@@ -56,6 +64,7 @@ export class Simulation {
     this._unsubscribers = [];
     // Reused for every tick event to avoid allocating at 20 Hz. Treat as read-only.
     this._tickPayload = { year: 1, yearProgress: 0, paused: false, speed: 1 };
+    this._settlementPayloadObject = { year: 1, count: 0, totalPopulation: 0, settlements: [] };
   }
 
   get running() { return this._timer !== null; }
@@ -78,6 +87,19 @@ export class Simulation {
       `[Simulation] Initialized "${config.name}" (seed ${config.seed}, ${config.tiles}x${config.tiles} tiles, generated in ${this.world.generationMs} ms).`,
     );
     this.bus.emit(EVENTS.SIM_INITIALIZED, { worldState: this.worldState, snapshot: this.snapshot() });
+
+    // Phase 3: starting settlements, placed deterministically from the world seed.
+    this.settlements = new SettlementSystem({
+      world: this.world,
+      seedValue: config.seedValue,
+      config: this._settlementConfig,
+    });
+    this.settlements.generateInitialSettlements(this.clock.year);
+    this._syncSettlementStats();
+    console.info(
+      `[Simulation] Placed ${this.settlements.list.length} settlements (minimum spacing ${this.settlements.lastPlacement.minDistance} tiles).`,
+    );
+    this.bus.emit(EVENTS.SETTLEMENTS_CREATED, this._settlementPayload());
   }
 
   /** Begin advancing time. Calling it while already running does nothing. */
@@ -117,6 +139,7 @@ export class Simulation {
 
     if (years > 0) {
       this.worldState.year = this.clock.year;
+      this._advanceSettlements(previousYear + 1, this.clock.year);
       this.bus.emit(EVENTS.SIM_YEAR_CHANGED, { year: this.clock.year, previousYear, yearsElapsed: years });
     }
     const payload = this._tickPayload;
@@ -126,6 +149,40 @@ export class Simulation {
     payload.speed = this.clock.speed;
     this.bus.emit(EVENTS.SIM_TICK, payload);
     return years;
+  }
+
+  /**
+   * Run the yearly settlement update for every year in [fromYear, toYear].
+   * Each year is processed individually so results do not depend on how the
+   * real-time ticks happened to be split (or on frame rate).
+   */
+  _advanceSettlements(fromYear, toYear) {
+    if (!this.settlements) return;
+    const changes = [];
+    for (let year = fromYear; year <= toYear; year++) {
+      for (const change of this.settlements.advanceYear(year)) changes.push(change);
+    }
+    this._syncSettlementStats();
+    for (const change of changes) {
+      const name = change.kind === 'promoted' ? EVENTS.SETTLEMENT_PROMOTED : change.kind === 'demoted' ? EVENTS.SETTLEMENT_DEMOTED : EVENTS.SETTLEMENT_ABANDONED;
+      this.bus.emit(name, change);
+    }
+    this.bus.emit(EVENTS.SETTLEMENTS_UPDATED, this._settlementPayload());
+  }
+
+  _syncSettlementStats() {
+    this.worldState.population = Math.round(this.settlements.totalPopulation);
+    this.worldState.settlementCount = this.settlements.activeCount;
+  }
+
+  /** Payload shared by SETTLEMENTS_CREATED / SETTLEMENTS_UPDATED. The settlements are live objects: read only. */
+  _settlementPayload() {
+    const p = this._settlementPayloadObject;
+    p.year = this.clock.year;
+    p.count = this.settlements.activeCount;
+    p.totalPopulation = this.settlements.totalPopulation;
+    p.settlements = this.settlements.list;
+    return p;
   }
 
   pause() {

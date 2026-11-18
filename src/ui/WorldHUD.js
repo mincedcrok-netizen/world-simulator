@@ -4,6 +4,8 @@ import { EVENTS } from '../systems/Events.js';
 import { confirmDialog } from './dialogs.js';
 import { el, formatNumber, icon, isTypingContext } from './dom.js';
 
+const LARGEST_COUNT = 6;
+
 /**
  * In-world interface: top bar, information side panel and simulation controls.
  *
@@ -20,6 +22,7 @@ export class WorldHUD {
     this._bus = bus;
     this._settingsDialog = settingsDialog;
     this._progressStep = -1;
+    this._settlementsVisible = true;
     this._refs = {};
     this._speedButtons = new Map();
 
@@ -34,6 +37,8 @@ export class WorldHUD {
       bus.on(EVENTS.SIM_SPEED_CHANGED, (p) => this._applySnapshot(p.snapshot)),
       bus.on(EVENTS.SIM_YEAR_CHANGED, (p) => this._setYear(p.year)),
       bus.on(EVENTS.SIM_TICK, (p) => this._setProgress(p.yearProgress)),
+      bus.on(EVENTS.SETTLEMENTS_CREATED, (p) => this._updateSettlements(p)),
+      bus.on(EVENTS.SETTLEMENTS_UPDATED, (p) => this._updateSettlements(p)),
     ];
 
     this._onKeyDown = (event) => this._handleShortcut(event);
@@ -70,6 +75,19 @@ export class WorldHUD {
       r[key] = el('dd', { text: '-' });
       return r[key];
     };
+    // Fixed pool of buttons for the largest settlements (text is updated in place each year).
+    r.largestButtons = [];
+    r.largest = el('ul', { class: 'settlement-list' });
+    for (let i = 0; i < LARGEST_COUNT; i++) {
+      const name = el('span', { class: 'settlement-list__name' });
+      const pop = el('span', { class: 'settlement-list__pop' });
+      const button = el('button', {
+        class: 'settlement-list__button', type: 'button', hidden: true,
+        onClick: () => this._bus.emit(EVENTS.CMD_SETTLEMENT_SELECT, { id: Number(button.dataset.id), focus: true }),
+      }, name, pop);
+      r.largestButtons.push({ button, name, pop });
+      r.largest.append(el('li', {}, button));
+    }
     r.sideBody = el(
       'div',
       { class: 'hud-side__body', id: 'hud-side-body' },
@@ -84,17 +102,25 @@ export class WorldHUD {
         el('dt', { text: 'Water' }), info('infoWater'),
         el('dt', { text: 'Terrain variety' }), info('infoVariety'),
       ),
-      el('h2', { class: 'hud-side__heading', text: 'Civilizations' }),
+      el('h2', { class: 'hud-side__heading', text: 'Population' }),
       el(
         'dl',
         { class: 'info-list' },
-        el('dt', { text: 'Civilizations' }), info('infoCivs'),
+        el('dt', { text: 'Settlements' }), info('infoSettlements'),
         el('dt', { text: 'Population' }), info('infoPopulation'),
       ),
+      el('h3', { class: 'hud-side__subheading', text: 'Largest settlements' }),
+      r.largest,
+      el('h2', { class: 'hud-side__heading', text: 'Civilizations' }),
+      el('dl', { class: 'info-list' }, el('dt', { text: 'Civilizations' }), info('infoCivs')),
       el('p', { class: 'hud-side__note', text: 'No civilizations exist yet. They arrive in a later phase.' }),
       el(
         'div',
         { class: 'hud-side__actions' },
+        el('button', {
+          class: 'btn', type: 'button', text: 'Show settlements', 'aria-pressed': 'true', title: 'Show or hide settlement markers (H)',
+          onClick: (e) => { this._toggleSettlements(); this._blurIfMouse(e); },
+        }),
         el('button', { class: 'btn', type: 'button', text: 'World settings', onClick: (e) => { this._settingsDialog.open(); this._blurIfMouse(e); } }),
         el('button', { class: 'btn', type: 'button', text: 'Main menu', onClick: () => this._requestExit() }),
       ),
@@ -152,6 +178,9 @@ export class WorldHUD {
     r.infoVariety.textContent = VARIETY_OPTIONS[worldState.variety].label;
     r.infoCivs.textContent = formatNumber(worldState.civilizationCount);
     r.infoPopulation.textContent = formatNumber(worldState.population);
+    r.infoSettlements.textContent = formatNumber(worldState.settlementCount);
+    this._settlementsVisible = true;
+    this._syncSettlementToggle();
     this._progressStep = -1;
     this._setYear(snapshot.year);
     this._setProgress(snapshot.yearProgress);
@@ -177,6 +206,46 @@ export class WorldHUD {
     if (step === this._progressStep) return;
     this._progressStep = step;
     this._refs.progress.style.transform = `scaleX(${progress.toFixed(4)})`;
+  }
+
+  /** Settlement totals and the "largest settlements" list. Touches the DOM only when text changes. */
+  _updateSettlements({ settlements, totalPopulation, count }) {
+    const r = this._refs;
+    r.infoSettlements.textContent = formatNumber(count);
+    r.infoPopulation.textContent = formatNumber(Math.round(totalPopulation));
+
+    const top = [];
+    for (const s of settlements) {
+      if (!s.active) continue;
+      // Tiny insertion sort: only the largest LARGEST_COUNT are kept.
+      if (top.length === LARGEST_COUNT && s.population.total <= top[LARGEST_COUNT - 1].population.total) continue;
+      let i = top.length < LARGEST_COUNT ? top.push(s) - 1 : LARGEST_COUNT - 1;
+      top[i] = s;
+      while (i > 0 && top[i].population.total > top[i - 1].population.total) {
+        [top[i], top[i - 1]] = [top[i - 1], top[i]];
+        i--;
+      }
+    }
+    r.largestButtons.forEach((slot, index) => {
+      const s = top[index];
+      slot.button.hidden = !s;
+      if (!s) return;
+      slot.button.dataset.id = String(s.id);
+      if (slot.name.textContent !== s.name) slot.name.textContent = s.name;
+      const text = formatNumber(Math.round(s.population.total));
+      if (slot.pop.textContent !== text) slot.pop.textContent = text;
+    });
+  }
+
+  _toggleSettlements() {
+    this._settlementsVisible = !this._settlementsVisible;
+    this._syncSettlementToggle();
+    this._bus.emit(EVENTS.CMD_SETTLEMENTS_SET_VISIBLE, { visible: this._settlementsVisible });
+  }
+
+  _syncSettlementToggle() {
+    const button = this.element.querySelector('[title^="Show or hide settlement"]');
+    if (button) button.setAttribute('aria-pressed', String(this._settlementsVisible));
   }
 
   _toggleSide() {
@@ -215,6 +284,10 @@ export class WorldHUD {
       return;
     }
     if (onButton) return;
+    if (event.code === 'KeyH') {
+      this._toggleSettlements();
+      return;
+    }
     const index = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(event.code);
     if (index !== -1 && index < SIMULATION.SPEEDS.length) {
       this._bus.emit(EVENTS.CMD_SIM_SET_SPEED, { speed: SIMULATION.SPEEDS[index] });

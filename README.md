@@ -1,7 +1,7 @@
 # WORLD SIMULATOR
 
 A 2D civilization and world simulation sandbox for the browser.
-**Current state: Phase 2 (procedural world generation) on top of the Phase 1 foundation.** Worlds are generated from a seed with oceans, continents, islands, lakes, rivers, mountain ranges, a climate model, biomes and natural resources. Civilizations, population, settlements, economy, diplomacy, technology and warfare are deliberately **not** implemented yet.
+**Current state: Phase 3 (population and settlements) on top of Phase 2 (procedural world generation) and the Phase 1 foundation.** Worlds are generated from a seed with oceans, continents, islands, lakes, rivers, mountain ranges, a climate model, biomes and natural resources, and start with camps that grow, farm, store food, suffer droughts and develop over simulated years. Civilizations, governments, trade, diplomacy, warfare, technology, religion and culture are deliberately **not** implemented yet.
 
 ## Requirements
 
@@ -34,10 +34,23 @@ npm test          # headless tests (Node's built-in test runner, no extra depend
 | Middle mouse button + drag | Drag the map |
 | Space | Pause / resume the simulation |
 | 1, 2, 3, 4 | Speed 1x, 2x, 5x, 10x |
-| F3 | Toggle the debug panel (includes a live readout of the tile under the cursor) |
+| Left click | Select a settlement (click empty ground to deselect) |
+| H | Show / hide settlement markers |
+| F3 | Toggle the debug panel (includes a live readout of the tile under the cursor and settlement statistics) |
 | Esc | Go back from the Load World / New World screens, close dialogs |
 
 ## Implemented features
+
+### Phase 3: population and settlements
+
+- **Settlements** (`src/simulation/settlements/`): each has a unique id, name, map position, type (Camp, Village, Town), founding year, food storage and limit, food production, population capacity, development level, and a population group. Towns are defined and data-driven but **not attainable yet**: their thresholds exceed what a village can reach in this phase.
+- **Initial placement**: every land tile is scored from its surroundings (fertile farmland, fresh water, forest, stone and wood, how accessible the terrain is). Oceans, lakes, mountains, snow and swamp are never used; a site needs fresh water within about 2 tiles. Sites are then picked best-first with a minimum spacing (17 to 21 tiles on a Medium world). Placement is deterministic for a world seed and configuration: roughly one camp per 900 land tiles (6 on a Small world, 25 on a Medium one, about 100 on a Large one).
+- **Population model**: each group tracks total, births, deaths, growth rate, food available, consumption, production, capacity and living conditions. Growth is logistic: it slows to nothing at capacity and the configured maximum is 3% per year, so it can never become exponential. Hunger cuts births and adds deaths; living conditions fall quickly and recover slowly, so recovery after a famine is gradual.
+- **Food**: production is limited by labour or by what the land and water yield (whichever is smaller) and improves with development; consumption is one food unit per person per year; storage is limited, spoils 10% per year, and covers bad harvests until it runs out. Harvests vary yearly and occasional droughts (4% per settlement-year) destroy more than half of a harvest. All of it is deterministic from the world seed.
+- **Development and type**: development level (0 to 5) grows while a settlement is food-secure and reasonably full (faster with stone and wood nearby) and regresses in prolonged hardship. A camp becomes a village at development 2 with at least 35 people, 5 secure years and some wood or stone nearby; a village falls back to a camp if it declines. A settlement whose people die out is abandoned.
+- **Simulation integration**: settlements advance once per simulated year, driven by the simulation clock only (not frames). Pausing stops them, speed multiplies them, and several years inside one tick are each simulated individually, so results do not depend on frame rate or tick size.
+- **Interface**: markers on the map (one Graphics object for all of them: tent = camp, disc = village, square = town) that keep a constant on-screen size, click selection with a ring and name label, a settlement inspection panel (name, type, population, capacity, growth rate, births and deaths, food storage, annual production and consumption, balance, development level, living conditions, population history chart), a "Largest settlements" list in the side panel that selects and focuses the camera, and a show/hide toggle (button or H).
+- **Data-driven tuning**: every rate, yield and threshold lives in `src/config/settlementConfig.js`. `createSettlementConfig(overrides)` validates overrides (unknown keys, wrong types, out-of-range values and inconsistent combinations throw a `SettlementConfigError` listing every problem).
 
 ### Phase 2: procedural world generation
 
@@ -99,6 +112,26 @@ src/
 tests/                     Unit tests for everything that does not need a browser
 ```
 
+### Settlement architecture
+
+```
+Simulation (clock)  --year elapsed-->  SettlementSystem.advanceYear(year)   src/simulation/settlements/
+                                         for each active settlement, in order:
+                                           capacity + harvest  (food.js)
+                                           eat / store / spoil (food.js)
+                                           births, deaths      (population.js)
+                                           living conditions   (population.js)
+                                           development + type  (development.js)
+                                           abandonment
+  SettlementPlacer.js   score every tile (SiteAnalysis.js: summed-area tables, O(1) per tile), pick best-first with spacing
+  Settlement.js         plain mutable data object (nothing is allocated per year)
+  SettlementNames.js    deterministic unique names
+Simulation --settlements:created / settlements:updated / settlement:promoted|demoted|abandoned--> UI
+UI (map click, panel, list) --cmd:settlement:select / cmd:settlements:setVisible--> WorldScene
+```
+
+The settlement code has no Phaser, DOM or event-bus dependency; the Simulation publishes its results through the EventBus, and `src/world/SettlementLayer.js` (Phaser) and `src/ui/SettlementPanel.js` (DOM) only read them. The data a settlement needs from its surroundings is analysed once when it is founded and cached on the settlement (`settlement.site`).
+
 ### World generation architecture
 
 ```
@@ -151,6 +184,10 @@ Key rules that keep the foundation extensible:
 - Mountain ranges are generated as ridges, not by simulated tectonics; erosion is not simulated. Rivers follow tile centres at 8 directions, so they look slightly angular when zoomed in.
 - Generation runs on the main thread: about 0.1 s for Medium and 0.4 s for Large in Node on the development machine, plus roughly 1 to 2 s to paint the textures and start the scene for a Large world in headless Chromium; expect longer on an i5-8250U (not measured). A loading screen is shown meanwhile; a Web Worker would remove the pause entirely.
 - Resource values are placement data only; they are not shown on the map yet (use the F3 tile readout to inspect them).
+- Settlements are static points: no migration, no founding of new settlements, no merging, no trade between them and no physical buildings (all later phases). Each settlement farms only its own surroundings; neighbouring settlements do not compete for land (they are kept at least 6 tiles apart).
+- Settlement balance (growth, droughts, development speed) is a first pass tuned by observing the simulation, not by game-design playtesting. All numbers are in `src/config/settlementConfig.js`. In the seeds I measured, with default settings, camps become villages after about 50 years and nearly every settlement is at its capacity and development level 5 by about year 180; Towns are not reachable. The model is therefore on the calm side: shortages are occasional (droughts) rather than a constant threat.
+- Population is tracked as a number per settlement (fractions allowed internally; shown rounded), not as individual people.
+- The settlement panel scrolls on short windows (the population-history chart is at the bottom).
 - Civilization, population and every other simulated system are placeholders (counts show 0).
 - The world starts running at 1x immediately after creation.
 - The Phaser canvas renders at CSS-pixel resolution (not device-pixel ratio), a deliberate choice for low-end GPUs; on high-DPI screens the map looks slightly soft when zoomed in, UI text stays sharp.
@@ -162,4 +199,6 @@ Key rules that keep the foundation extensible:
 
 ## Testing performed
 
-`npm test` runs 104 tests: the 57 Phase 1 tests (unchanged apart from one import so the legacy generator is still exercised directly) plus 47 Phase 2 tests covering determinism, different seeds, dimensions, land/water distribution, every world-generation setting, elevation validity, terrain/biome consistency, mountain connectivity, climate, rivers (direction, never uphill, always reach water, sources in high ground), lakes, resources, the painter and invalid configurations. The final report delivered with this project lists the exact results, including what was and was not tested.
+`npm test` runs 164 tests: the 57 Phase 1 tests and 47 Phase 2 tests (see below for the two small adjustments to existing tests), plus 60 Phase 3 tests covering population growth and decline, birth and death formulas, food production, consumption, storage and shortages, capacity, settlement placement suitability, minimum distances, determinism, multiple settlements, pause and speed behaviour, invalid configurations and large-world performance. The earlier tests cover determinism, different seeds, dimensions, land/water distribution, every world-generation setting, elevation validity, terrain/biome consistency, mountain connectivity, climate, rivers (direction, never uphill, always reach water, sources in high ground), lakes, resources, the painter and invalid configurations. Adjustments to pre-existing tests, both because Phase 3 deliberately changed the behaviour they pinned down: the Phase 2 change to `TestMapGenerator.test.js` (an import, so the legacy generator is still tested directly), and in `Simulation.test.js` one assertion that population is the placeholder `0` now checks that it equals the live total of all settlements. The final report delivered with this project lists the exact results, including what was and was not tested.
+
+In development mode only (`npm run dev`) the running game is exposed as `window.__worldSimulator` for browser tests and console debugging; it is not present in production builds.

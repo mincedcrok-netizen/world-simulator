@@ -3,6 +3,7 @@ import { validateWorldConfig } from '../../config/worldOptions.js';
 import { Simulation } from '../../simulation/Simulation.js';
 import { EVENTS } from '../../systems/Events.js';
 import { CameraController } from '../../world/CameraController.js';
+import { SettlementLayer } from '../../world/SettlementLayer.js';
 import { WorldRenderer } from '../../world/WorldRenderer.js';
 
 const BACKGROUND = '#0a1217';
@@ -23,6 +24,8 @@ export class WorldScene extends Phaser.Scene {
     this._simulation = null;
     this._renderer = null;
     this._cameraController = null;
+    this._settlementLayer = null;
+    this._selectedId = null;
     this._cleanups = [];
   }
 
@@ -42,9 +45,10 @@ export class WorldScene extends Phaser.Scene {
     if (!controller) return;
     controller.update(delta);
     if (controller.zoomChanged) this._renderer.updateZoom(controller.zoom);
+    this._settlementLayer?.redrawIfNeeded(controller.zoom);
   }
 
-  _setup({ bus, settings, hud, debug, loading }) {
+  _setup({ bus, settings, hud, debug, loading, settlementPanel }) {
     const validation = validateWorldConfig(this._worldConfig);
     if (!validation.ok) {
       throw new Error(`Invalid world configuration: ${Object.values(validation.errors).join(' ')}`);
@@ -73,17 +77,40 @@ export class WorldScene extends Phaser.Scene {
     this._cameraController.attach();
     this._renderer.updateZoom(this._cameraController.zoom);
 
+    // 3b. Settlement markers (one Graphics object) and the inspection panel
+    settlementPanel.hide();
+    this._settlementLayer = new SettlementLayer(this, simulation.settlements.list, simulation.world.tileSize);
+
     // 4. Reactions to settings changes and to leaving the world
     this._cleanups.push(
       bus.on(EVENTS.SETTINGS_CHANGED, ({ key, value }) => {
         if (key === 'cameraSpeed') this._cameraController.panSpeed = value;
         if (key === 'cameraSmoothing') this._cameraController.smoothing = value;
       }),
+      bus.on(EVENTS.CMD_SETTLEMENT_SELECT, (command) => this._select(command?.id ?? null, Boolean(command?.focus))),
+      bus.on(EVENTS.CMD_SETTLEMENTS_SET_VISIBLE, (command) => this._settlementLayer?.setVisible(Boolean(command?.visible))),
+      bus.on(EVENTS.SETTLEMENTS_UPDATED, () => this._settlementLayer?.markDirty()),
+      bus.on(EVENTS.SETTLEMENT_PROMOTED, ({ settlement, from, to, year }) =>
+        console.info(`[Settlements] Year ${year}: ${settlement.name} grew from a ${from} to a ${to}.`)),
+      bus.on(EVENTS.SETTLEMENT_DEMOTED, ({ settlement, from, to, year }) =>
+        console.info(`[Settlements] Year ${year}: ${settlement.name} declined from a ${from} to a ${to}.`)),
+      bus.on(EVENTS.SETTLEMENT_ABANDONED, ({ settlement, year }) =>
+        console.warn(`[Settlements] Year ${year}: ${settlement.name} was abandoned.`)),
       bus.on(EVENTS.WORLD_EXIT_REQUESTED, () => {
         console.info('[World] Leaving world, returning to the main menu.');
         this.scene.start('MenuScene');
       }),
     );
+
+    // Click a settlement to select it; click empty ground to deselect. Middle-button drags are ignored.
+    const onPointerUp = (pointer) => {
+      if (pointer.button !== 0 || pointer.getDistance() > 6 || pointer.getDuration() > 500) return;
+      const spot = this._cameraController.screenToWorld(pointer.x, pointer.y);
+      const hit = this._settlementLayer.hitTest(spot.x, spot.y, this._cameraController.zoom);
+      this._select(hit ? hit.id : null, false);
+    };
+    this.input.on('pointerup', onPointerUp);
+    this._cleanups.push(() => this.input?.off('pointerup', onPointerUp));
 
     // 5. Debug info
     const landPercent = (simulation.world.landRatio() * 100).toFixed(1);
@@ -102,6 +129,17 @@ export class WorldScene extends Phaser.Scene {
       Generated: `${simulation.world.generationMs} ms`,
       Lakes: simulation.world.lakes.length,
     }));
+    debug.addSection('settlements', 'Settlements', () => {
+      const system = simulation.settlements;
+      const active = Math.max(1, system.activeCount);
+      return {
+        Active: `${system.activeCount} of ${system.list.length}`,
+        Population: Math.round(system.totalPopulation),
+        Average: Math.round(system.totalPopulation / active),
+        'Year step': `${system.lastStepMs.toFixed(2)} ms`,
+        Selected: this._selectedId ? (system.getById(this._selectedId)?.name ?? '-') : 'none',
+      };
+    });
     // Tile under the mouse pointer: handy for checking the generated data.
     debug.addSection('tile', 'Tile under cursor', () => {
       const pointer = this.input.activePointer;
@@ -142,9 +180,25 @@ export class WorldScene extends Phaser.Scene {
     this.scene.start('MenuScene');
   }
 
-  _teardown({ hud, debug }) {
+  /** Select a settlement (or clear with null). `focus` also centres the camera on it. */
+  _select(id, focus) {
+    const settlement = id ? (this._simulation?.settlements.getById(id) ?? null) : null;
+    this._selectedId = settlement ? settlement.id : null;
+    this._settlementLayer?.setSelected(this._selectedId);
+    const bus = this.registry.get('services').bus;
+    bus.emit(EVENTS.SETTLEMENT_SELECTED, { id: this._selectedId, settlement });
+    if (settlement && focus) {
+      const size = this._simulation.world.tileSize;
+      this._cameraController.focusOn((settlement.x + 0.5) * size, (settlement.y + 0.5) * size);
+    }
+  }
+
+  _teardown({ hud, debug, settlementPanel }) {
     for (const cleanup of this._cleanups) cleanup();
     this._cleanups = [];
+    this._settlementLayer?.destroy();
+    this._settlementLayer = null;
+    settlementPanel?.hide();
     this._cameraController?.destroy();
     this._cameraController = null;
     this._renderer?.destroy();
@@ -155,6 +209,7 @@ export class WorldScene extends Phaser.Scene {
     debug.removeSection('camera');
     debug.removeSection('world');
     debug.removeSection('tile');
+    debug.removeSection('settlements');
     hud.hide();
   }
 }

@@ -163,6 +163,7 @@ test('initialize produces a world with land and water and placeholder stats', ()
   const h = createHarness();
   assert.ok(h.sim.world.landRatio() > 0.03 && h.sim.world.landRatio() < 0.9);
   assert.equal(h.sim.worldState.civilizationCount, 0);
-  assert.equal(h.sim.worldState.population, 0);
+  // Phase 3: population is no longer a placeholder; it is the live total of all settlements.
+  assert.equal(h.sim.worldState.population, Math.round(h.sim.settlements.totalPopulation));
   assert.equal(h.sim.worldState.year, 1);
 });

@@ -16,9 +16,10 @@ export class WorldState {
     this.variety = config.variety;
 
     this.year = 1;
-    // Placeholders until the civilization and population systems exist.
+    // Civilizations do not exist yet (later phase). Population and settlements are live (Phase 3).
     this.civilizationCount = 0;
     this.population = 0;
+    this.settlementCount = 0;
   }
 
   toJSON() {

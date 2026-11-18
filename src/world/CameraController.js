@@ -61,6 +61,7 @@ export class CameraController {
     this._state = { x: 0, y: 0, zoom: 1 }; // reused for getState()
     this._point = { x: 0, y: 0 }; // reused for screenToWorld()
     this._attached = false;
+    this._forceApply = false;
 
     this._onKeyDown = this._onKeyDown.bind(this);
     this._onKeyUp = this._onKeyUp.bind(this);
@@ -120,6 +121,22 @@ export class CameraController {
   }
 
   /**
+   * Move the camera to centre on a world position, zooming in to at least
+   * `minZoom` (smoothly when smoothing is on).
+   */
+  focusOn(worldX, worldY, minZoom = 1.2) {
+    this._cx = worldX;
+    this._cy = worldY;
+    this._vx = 0;
+    this._vy = 0;
+    // Anchor the target to the screen centre while the zoom animates, so the clamp
+    // applied at low zoom (where the whole map fits) cannot pull the centre away from it.
+    this._anchor = { sx: this._viewW / 2, sy: this._viewH / 2, wx: worldX, wy: worldY };
+    this._targetZoom = clamp(Math.max(this._targetZoom, minZoom), this._minZoom, CAMERA.MAX_ZOOM);
+    this._forceApply = true;
+  }
+
+  /**
    * Convert a position on the canvas (pixels) to world pixels. The returned
    * object is reused between calls.
    */
@@ -138,6 +155,10 @@ export class CameraController {
     const dt = Math.min(deltaMs, 100) / 1000; // ignore long hitches (tab switches)
     this.zoomChanged = false;
     let changed = this._syncViewport();
+    if (this._forceApply) {
+      this._forceApply = false;
+      changed = true;
+    }
 
     // Keyboard panning with optional smoothing
     let ix = 0;
